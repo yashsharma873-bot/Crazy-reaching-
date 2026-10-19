@@ -1,0 +1,408 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Crazy Racing 3D</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101820;color:white;font-family:Arial;overflow:hidden;touch-action:none}
+header{height:44px;background:#102536;display:flex;align-items:center;justify-content:center;color:#ffe34d;font-weight:bold;font-size:21px}
+#hud{height:58px;display:flex;align-items:center;justify-content:space-around;background:#172b3a;font-size:14px;font-weight:bold}
+#hud span{display:block;text-align:center}
+#speed{font-size:22px;color:#58edff}
+#game{display:block;width:100%;height:calc(100dvh - 192px);min-height:250px}
+#progressBox{height:8px;background:#38434d}
+#progress{height:100%;width:0;background:#35f28a}
+#controls{height:82px;display:flex;justify-content:space-evenly;align-items:center;background:#102536;gap:5px}
+button{border:0;border-radius:13px;font-size:16px;font-weight:bold;padding:15px 12px;touch-action:none}
+.steer{background:#ffdc3d;color:#151515;width:23%;height:60px}
+.pedal{background:#39e783;color:#101820;width:25%;height:60px}
+#brake{background:#ff655a}
+#overlay{position:fixed;inset:0;z-index:5;background:#07131eee;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:22px;gap:13px}
+#overlay h1{color:#ffe34d;font-size:32px;margin:0}
+#overlay p{line-height:1.5;max-width:340px}
+#start{background:#37ef87;padding:16px 30px;font-size:19px}
+#hint{font-size:12px;color:#b6d5e6}
+</style>
+</head>
+<body>
+
+<header>🏁 CRAZY RACING 3D</header>
+<div id="hud">
+ <span>SPEED<br><b id="speed">0 km/h</b></span>
+ <span>OVERTAKES<br><b id="overtakes">0</b></span>
+ <span>RACE<br><b id="distance">0%</b></span>
+</div>
+<div id="progressBox"><div id="progress"></div></div>
+<div id="game"></div>
+
+<div id="controls">
+ <button class="steer" id="left">⬅ LEFT</button>
+ <button class="pedal" id="brake">BRAKE</button>
+ <button class="pedal" id="gas">GAS 🚀</button>
+ <button class="steer" id="right">RIGHT ➡</button>
+</div>
+
+<div id="overlay">
+ <h1>🏎️ CRAZY RACING 3D</h1>
+ <div style="font-size:65px">🏁</div>
+ <p id="message">Race against traffic, overtake rival cars and reach the finish line!</p>
+ <p id="hint">Hold GAS to accelerate. Use LEFT and RIGHT to steer.</p>
+ <button id="start">START RACE</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+const root=document.getElementById("game");
+const $=id=>document.getElementById(id);
+let scene,camera,renderer,player;
+let rivals=[],trees=[],dashes=[],roadSides=[];
+let running=false,finished=false;
+let speed=0,progress=0,overtakes=0;
+let steering=0,gas=false,braking=false;
+let last=0,raf=0;
+let best=0;
+const MAX_SPEED=30;
+const RACE_LENGTH=2500;
+const lanes=[-4,0,4];
+
+try{best=Number(localStorage.getItem("crazy3DBest"))||0}catch(e){}
+
+function makeMat(color,roughness=0.8){
+ return new THREE.MeshStandardMaterial({color,roughness});
+}
+function box(parent,w,h,d,color,x,y,z,mat){
+ const mesh=new THREE.Mesh(
+  new THREE.BoxGeometry(w,h,d),
+  mat||makeMat(color)
+ );
+ mesh.position.set(x,y,z);
+ mesh.castShadow=true;
+ mesh.receiveShadow=true;
+ parent.add(mesh);
+ return mesh;
+}
+
+function makeCar(color){
+ const car=new THREE.Group();
+ const bodyMat=makeMat(color,0.35);
+ const glass=makeMat(0x8ce5ff,0.25);
+ const dark=makeMat(0x171b22);
+ const light=makeMat(0xfff4bf);
+ const red=makeMat(0xff2424);
+
+ box(car,1.8,0.65,3.5,color,0,0.75,0,bodyMat);
+ box(car,1.3,0.7,1.6,0x263a50,0,1.28,-0.15,dark);
+ box(car,1.15,0.5,1.25,0x8ce5ff,0,1.35,0.15,glass);
+
+ for(const x of [-0.96,0.96]){
+  for(const z of [-1.05,1.05]){
+   const wheel=new THREE.Mesh(
+    new THREE.CylinderGeometry(0.38,0.38,0.22,16),
+    dark
+   );
+   wheel.rotation.z=Math.PI/2;
+   wheel.position.set(x,0.48,z);
+   car.add(wheel);
+  }
+  box(car,0.35,0.15,0.1,0xfff4bf,x*0.65,0.78,1.77,light);
+  box(car,0.35,0.15,0.1,0xff2424,x*0.65,0.78,-1.77,red);
+ }
+ return car;
+}
+
+function init(){
+ if(!window.THREE){
+  $("message").textContent="3D library did not load. Connect to the internet and reload this page.";
+  $("start").textContent="RELOAD GAME";
+  $("start").onclick=()=>location.reload();
+  return false;
+ }
+
+ scene=new THREE.Scene();
+ scene.background=new THREE.Color(0x87ceeb);
+ scene.fog=new THREE.Fog(0x87ceeb,90,340);
+
+ camera=new THREE.PerspectiveCamera(65,1,0.1,500);
+ camera.position.set(0,5.5,-10);
+
+ renderer=new THREE.WebGLRenderer({antialias:true});
+ renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.7));
+ renderer.shadowMap.enabled=true;
+ renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+ root.innerHTML="";
+ root.appendChild(renderer.domElement);
+
+ scene.add(new THREE.HemisphereLight(0xffffff,0x466040,2));
+ const sun=new THREE.DirectionalLight(0xffffff,2.1);
+ sun.position.set(-15,30,15);
+ sun.castShadow=true;
+ scene.add(sun);
+
+ // Grass and racing road
+ const grass=new THREE.Mesh(
+  new THREE.PlaneGeometry(1000,1000),
+  makeMat(0x348b42)
+ );
+ grass.rotation.x=-Math.PI/2;
+ grass.position.set(0,-0.16,200);
+ scene.add(grass);
+
+ const road=new THREE.Mesh(
+  new THREE.PlaneGeometry(14,650),
+  makeMat(0x383d43)
+ );
+ road.rotation.x=-Math.PI/2;
+ road.position.set(0,0,240);
+ scene.add(road);
+
+ // Road edges
+ for(const x of [-7,7]){
+  const edge=new THREE.Mesh(
+   new THREE.BoxGeometry(0.2,0.08,650),
+   makeMat(0xffffff)
+  );
+  edge.position.set(x,0.02,240);
+  scene.add(edge);
+ }
+
+ // Lane markings
+ for(const x of [-2.33,2.33]){
+  for(let i=0;i<22;i++){
+   const dash=box(scene,0.11,0.035,7,0xffffff,x,0.03,i*13+5);
+   dashes.push(dash);
+  }
+ }
+
+ // Trees on both sides
+ for(let i=0;i<38;i++){
+  for(const side of [-1,1]){
+   const tree=new THREE.Group();
+   box(tree,0.45,2.4,0.45,0x704323,0,1.2,0);
+   const leaves=new THREE.Mesh(
+    new THREE.ConeGeometry(1.5,3.5,7),
+    makeMat(0x167339)
+   );
+   leaves.position.y=3.5;
+   tree.add(leaves);
+   tree.position.set(side*(10+Math.random()*4),0,i*17+10);
+   scene.add(tree);
+   trees.push(tree);
+  }
+ }
+
+ player=makeCar(0x00aaff);
+ player.position.set(0,0,0);
+ scene.add(player);
+
+ const colors=[0xff3434,0xffb52e,0xa86aff,0xf4f4f4,0x29dba0,0xff65b7];
+ for(let i=0;i<7;i++){
+  const car=makeCar(colors[i%colors.length]);
+  car.position.set(lanes[i%3],0,35+i*32);
+  scene.add(car);
+  rivals.push({
+   mesh:car,
+   lane:i%3,
+   z:35+i*32,
+   speed:7+Math.random()*7,
+   color:colors[i%colors.length]
+  });
+ }
+
+ resize();
+ window.addEventListener("resize",resize);
+ return true;
+}
+
+function resize(){
+ if(!renderer)return;
+ const w=root.clientWidth;
+ const h=root.clientHeight;
+ if(!w||!h)return;
+ renderer.setSize(w,h,false);
+ camera.aspect=w/h;
+ camera.updateProjectionMatrix();
+}
+
+function reset(){
+ if(!renderer&&!init())return;
+ cancelAnimationFrame(raf);
+
+ speed=0;
+ progress=0;
+ overtakes=0;
+ steering=0;
+ gas=false;
+ braking=false;
+ running=true;
+ finished=false;
+ last=0;
+
+ player.position.x=0;
+ player.rotation.set(0,0,0);
+
+ rivals.forEach((r,i)=>{
+  r.lane=i%3;
+  r.z=40+i*30;
+  r.speed=7+Math.random()*7;
+  r.mesh.position.set(lanes[r.lane],0,r.z);
+ });
+
+ trees.forEach((t,i)=>{
+  const side=t.position.x<0?-1:1;
+  t.position.z=(Math.floor(i/2))*17+10;
+  t.position.x=side*(10+Math.random()*4);
+ });
+ dashes.forEach((d,i)=>d.position.z=i*13+5);
+
+ $("overlay").style.display="none";
+ raf=requestAnimationFrame(loop);
+}
+
+function endRace(won){
+ running=false;
+ finished=true;
+ cancelAnimationFrame(raf);
+ $("message").textContent=won?
+  "🏆 YOU WIN! Amazing racing, driver!":
+  "Race ended. Keep practising and try again!";
+ $("hint").textContent=
+  "Overtakes: "+overtakes+" | Distance: "+Math.floor(progress/RACE_LENGTH*100)+"%";
+ $("start").textContent="RACE AGAIN";
+ $("overlay").style.display="flex";
+}
+
+function loop(time){
+ if(!running)return;
+ const dt=last?Math.min((time-last)/1000,0.04):0.016;
+ last=time;
+
+ // Acceleration and braking
+ if(gas)speed=Math.min(MAX_SPEED,speed+18*dt);
+ else speed=Math.max(0,speed-2.5*dt);
+ if(braking)speed=Math.max(0,speed-28*dt);
+
+ const movement=speed*dt;
+ progress+=movement;
+
+ // Steering
+ player.position.x+=steering*12*dt;
+ player.position.x=Math.max(-5.1,Math.min(5.1,player.position.x));
+ player.rotation.z=-steering*0.09;
+ player.rotation.y=steering*0.045;
+
+ // Follow camera
+ camera.position.x+=(player.position.x*0.55-camera.position.x)*Math.min(1,dt*3);
+ camera.position.y=5.2;
+ camera.position.z=-10;
+ camera.lookAt(player.position.x*0.3,1.0,12);
+
+ // Road scenery scroll
+ dashes.forEach(d=>{
+  d.position.z-=movement;
+  if(d.position.z<-12)d.position.z+=286;
+ });
+ trees.forEach(t=>{
+  t.position.z-=movement;
+  if(t.position.z<-18){
+   t.position.z+=340;
+   const side=t.position.x<0?-1:1;
+   t.position.x=side*(10+Math.random()*4);
+  }
+ });
+
+ // Rival cars approach or fall behind according to relative speed
+ for(const r of rivals){
+  r.z-=(speed-r.speed)*dt;
+  r.mesh.position.z=r.z;
+  r.mesh.position.x=lanes[r.lane];
+
+  // Collision near the player's car
+  if(r.z<2.8&&r.z>-2.5&&Math.abs(r.mesh.position.x-player.position.x)<1.65){
+   endRace(false);
+   return;
+  }
+
+  // Rival passed by the player
+  if(r.z<-5){
+   overtakes++;
+   r.lane=Math.floor(Math.random()*3);
+   r.z=100+Math.random()*100;
+   r.speed=7+Math.random()*7;
+   r.mesh.position.set(lanes[r.lane],0,r.z);
+  }
+
+  // If a rival is too far ahead, let the player catch it
+  if(r.z>240){
+   r.z=140+Math.random()*60;
+   r.mesh.position.z=r.z;
+  }
+ }
+
+ $("speed").textContent=Math.round(speed*6)+" km/h";
+ $("overtakes").textContent=overtakes;
+ const pct=Math.min(100,progress/RACE_LENGTH*100);
+ $("distance").textContent=Math.floor(pct)+"%";
+ $("progress").style.width=pct+"%";
+
+ // Finish gate moves towards the player near race end
+ if(progress>=RACE_LENGTH){
+  endRace(true);
+  return;
+ }
+
+ renderer.render(scene,camera);
+ raf=requestAnimationFrame(loop);
+}
+
+// Hold-to-steer and pedal controls
+function hold(id,down,up){
+ const el=$(id);
+ el.addEventListener("pointerdown",e=>{
+  e.preventDefault();
+  el.setPointerCapture(e.pointerId);
+  down();
+ });
+ const release=e=>{
+  e.preventDefault();
+  up();
+ };
+ el.addEventListener("pointerup",release);
+ el.addEventListener("pointercancel",release);
+ el.addEventListener("lostpointercapture",up);
+}
+hold("left",()=>steering=-1,()=>{if(steering===-1)steering=0});
+hold("right",()=>steering=1,()=>{if(steering===1)steering=0});
+hold("gas",()=>gas=true,()=>gas=false);
+hold("brake",()=>braking=true,()=>braking=false);
+
+document.addEventListener("keydown",e=>{
+ if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," "].includes(e.key))e.preventDefault();
+ if(e.key==="ArrowLeft"||e.key==="a")steering=-1;
+ if(e.key==="ArrowRight"||e.key==="d")steering=1;
+ if(e.key==="ArrowUp"||e.key==="w")gas=true;
+ if(e.key==="ArrowDown"||e.key==="s")braking=true;
+});
+document.addEventListener("keyup",e=>{
+ if(e.key==="ArrowLeft"||e.key==="a"){if(steering===-1)steering=0}
+ if(e.key==="ArrowRight"||e.key==="d"){if(steering===1)steering=0}
+ if(e.key==="ArrowUp"||e.key==="w")gas=false;
+ if(e.key==="ArrowDown"||e.key==="s")braking=false;
+});
+window.addEventListener("blur",()=>{
+ steering=0;gas=false;braking=false;
+});
+
+$("start").addEventListener("click",reset);
+
+// Initialise the 3D scene
+if(!init()){
+ $("message").textContent="Internet is needed to load the 3D engine. Connect and reload.";
+}
+})();
+</script>
+</body>
+</html>
